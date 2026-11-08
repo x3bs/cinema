@@ -40,7 +40,7 @@
     let vol = 0, curVol = 0, reported = "", endedNow = false, lastSeek = 0;
     let tw = null, twLoading = false, twReady = false;
     const RES = new URLSearchParams(location.search).get("res");
-    const twBox = document.getElementById("tw");
+    const twBox = document.getElementById("tw"), shield = document.querySelector(".shield");
 
     // ارسال للعبة او السيرفر
     function send(name, data) {
@@ -115,6 +115,8 @@
     function startTwitch(p) {
       if (location.protocol !== "https:") return showIdle("تويتش يحتاج صفحة HTTPS");
       twBox.style.display = "block";
+      idle.style.display = "none";
+      shield.style.display = "none";
       loadTwitch(() => {
         if (last !== p) return;
         twBox.innerHTML = "";
@@ -125,7 +127,7 @@
         tw.addEventListener(Twitch.Player.READY, () => { twReady = true; tw.setMuted(false); if (p.paused) tw.pause(); });
         tw.addEventListener(Twitch.Player.PLAYING, () => { if (!endedNow) idle.classList.add("hide"); report(); });
         tw.addEventListener(Twitch.Player.ENDED, () => { if (!p.live) showEnded(); });
-        tw.addEventListener(Twitch.Player.OFFLINE, () => showIdle("القناة مو مباشرة الحين"));
+        tw.addEventListener(Twitch.Player.OFFLINE, () => { idle.style.display = ""; showIdle("القناة مو مباشرة الحين"); });
       });
     }
 
@@ -159,6 +161,7 @@
       if (player && ready && player.stopVideo) player.stopVideo();
       if (tw) { try { tw.pause(); } catch (e) {} tw = null; }
       twBox.innerHTML = ""; twBox.style.display = "none"; twReady = false;
+      idle.style.display = ""; shield.style.display = "";
       mode = null;
     }
 
