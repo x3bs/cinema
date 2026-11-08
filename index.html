@@ -11,6 +11,7 @@
     #player iframe { width: 100%; height: 100%; border: 0; pointer-events: none; }
     #tw { position: absolute; left: 0; top: -60px; width: 1280px; height: 840px; display: none; pointer-events: none; }
     #tw iframe { width: 100%; height: 100%; border: 0; pointer-events: none; }
+    #tk { position: absolute; inset: 0; width: 1280px; height: 720px; border: 0; display: none; pointer-events: none; background: #000; }
     #vid { position: absolute; inset: 0; width: 1280px; height: 720px; object-fit: contain; background: #000; display: none; }
     .shield { position: absolute; inset: 0; z-index: 1; }
     .idle { position: absolute; inset: 0; z-index: 2; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 26px;
@@ -24,6 +25,7 @@
 <body>
   <div id="player"></div>
   <div id="tw"></div>
+  <iframe id="tk" allow="autoplay; encrypted-media" referrerpolicy="strict-origin-when-cross-origin"></iframe>
   <video id="vid" playsinline preload="auto"></video>
   <div class="shield"></div>
   <div class="idle" id="idle">
@@ -40,21 +42,53 @@
     let vol = 0, curVol = 0, reported = "", endedNow = false, lastSeek = 0;
     let tw = null, twLoading = false, twReady = false;
     const RES = new URLSearchParams(location.search).get("res");
-    const twBox = document.getElementById("tw"), shield = document.querySelector(".shield");
+    const twBox = document.getElementById("tw"), shield = document.querySelector(".shield"), tkFrame = document.getElementById("tk");
+    let tk = { ready: false, state: -1, time: 0, dur: 0, muted: null };
 
-    // ارسال للعبة او السيرفر
     function send(name, data) {
-      if (RES) {
-        fetch(`https://${RES}/${name}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) }).catch(() => {});
-      } else {
-        fetch(`${name === "cin_meta" ? "meta" : "diag"}?${new URLSearchParams(data)}`).catch(() => {});
+      if (!RES) return;
+      fetch(`https://${RES}/${name}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) }).catch(() => {});
+    }
+
+    function tkSend(type, value) {
+      if (tkFrame.contentWindow) tkFrame.contentWindow.postMessage({ type, value, "x-tiktok-player": true }, "*");
+    }
+
+    function startTiktok(p) {
+      tk = { ready: false, state: -1, time: Math.max(0, p.t || 0), dur: 0, muted: null, retried: false };
+      idle.style.display = "none";
+      shield.style.display = "none";
+      tkFrame.style.display = "block";
+      const q = "autoplay=1&controls=0&progress_bar=0&play_button=0&volume_control=0&fullscreen_button=0&timestamp=0&music_info=0&description=0&rel=0&native_context_menu=0&closed_caption=0";
+      tkFrame.src = p.live ? `https://www.tiktok.com/embed/live/@${p.vid}?autoplay=1&muted=0&controls=0` : `https://www.tiktok.com/player/v1/${p.vid}?${q}&loop=0`;
+    }
+
+    function onTiktok(m) {
+      if (mode !== "tiktok" || !m || typeof m !== "object") return;
+      const v = m.value;
+      if (m.type === "onPlayerReady") {
+        tk.ready = true; tk.muted = null;
+        const p = last;
+        if (!p.live && p.t > 1) tkSend("seekTo", Math.floor(p.t));
+        if (p.paused || p.ended) tkSend("pause"); else tkSend("play");
+      } else if (m.type === "onStateChange") {
+        tk.state = Number(v);
+        if (tk.state === 0 && !last.live) showEnded();
+      } else if (m.type === "onCurrentTime" && v && typeof v === "object") {
+        tk.time = Number(v.currentTime) || 0;
+        tk.dur = Number(v.duration) || 0;
+        report();
+      } else if (m.type === "onMute") {
+        tk.muted = !!v;
+      } else if (m.type === "onPlayerError" && v) {
+        if (v.errorCode === 3002) tkSend("play");
+        else if (v.errorCode === 3001 && !tk.retried) { tk.retried = true; const src = tkFrame.src; tkFrame.src = "about:blank"; setTimeout(() => { if (mode === "tiktok") tkFrame.src = src; }, 800); }
+        else { idle.style.display = ""; showIdle(v.errorCode === 1001 ? "الفيديو غير موجود او محذوف" : "ما قدرنا نشغل فيديو تيك توك"); }
       }
     }
 
-    // رسالة على الشاشة
     function showIdle(text) { idle.classList.remove("hide"); idleText.textContent = text; }
 
-    // تحميل مكتبة يوتيوب
     function loadApi() {
       if (apiLoading) return;
       apiLoading = true;
@@ -63,7 +97,6 @@
       document.head.appendChild(s);
     }
 
-    // انشاء مشغل يوتيوب
     function makePlayer() {
       ready = false;
       if (player && player.destroy) { try { player.destroy(); } catch (e) {} }
@@ -88,7 +121,6 @@
     }
     window.onYouTubeIframeAPIReady = makePlayer;
 
-    // تحميل مكتبة البث
     function loadHls(cb) {
       if (window.Hls) return cb();
       if (hlsLoading) return;
@@ -99,7 +131,6 @@
       document.head.appendChild(s);
     }
 
-    // تحميل مكتبة تويتش
     function loadTwitch(cb) {
       if (window.Twitch && window.Twitch.Player) return cb();
       if (twLoading) return;
@@ -111,7 +142,6 @@
       document.head.appendChild(s);
     }
 
-    // تشغيل تويتش
     function startTwitch(p) {
       if (location.protocol !== "https:") return showIdle("تويتش يحتاج صفحة HTTPS");
       twBox.style.display = "block";
@@ -131,19 +161,17 @@
       });
     }
 
-    // المشغل الحالي
     const A = {
-      time: () => mode === "yt" ? (player && player.getCurrentTime ? player.getCurrentTime() : 0) : mode === "twitch" ? (tw ? tw.getCurrentTime() : 0) : video.currentTime || 0,
-      dur: () => mode === "yt" ? (player && player.getDuration ? player.getDuration() : 0) : mode === "twitch" ? (tw ? tw.getDuration() : 0) : video.duration,
-      playing: () => mode === "yt" ? player.getPlayerState() === YT.PlayerState.PLAYING : mode === "twitch" ? !tw.isPaused() : !video.paused && !video.ended,
-      busy: () => mode === "yt" ? [YT.PlayerState.BUFFERING, YT.PlayerState.ENDED].indexOf(player.getPlayerState()) !== -1 : mode === "twitch" ? tw.getEnded() : video.readyState < 3 || video.ended,
-      play: () => { if (mode === "yt") player.playVideo(); else if (mode === "twitch") tw.play(); else { const r = video.play(); if (r && r.catch) r.catch(() => {}); } },
-      pause: () => { if (mode === "yt") player.pauseVideo(); else if (mode === "twitch") tw.pause(); else video.pause(); },
-      seek: (t) => { if (mode === "yt") player.seekTo(t, true); else if (mode === "twitch") tw.seek(t); else video.currentTime = t; },
-      ok: () => mode === "yt" ? !!(player && ready && player.getCurrentTime) : mode === "twitch" ? !!(tw && twReady) : !!mode,
+      time: () => mode === "yt" ? (player && player.getCurrentTime ? player.getCurrentTime() : 0) : mode === "twitch" ? (tw ? tw.getCurrentTime() : 0) : mode === "tiktok" ? tk.time : video.currentTime || 0,
+      dur: () => mode === "yt" ? (player && player.getDuration ? player.getDuration() : 0) : mode === "twitch" ? (tw ? tw.getDuration() : 0) : mode === "tiktok" ? tk.dur : video.duration,
+      playing: () => mode === "yt" ? player.getPlayerState() === YT.PlayerState.PLAYING : mode === "twitch" ? !tw.isPaused() : mode === "tiktok" ? tk.state === 1 || tk.state === 3 : !video.paused && !video.ended,
+      busy: () => mode === "yt" ? [YT.PlayerState.BUFFERING, YT.PlayerState.ENDED].indexOf(player.getPlayerState()) !== -1 : mode === "twitch" ? tw.getEnded() : mode === "tiktok" ? tk.state === 3 || tk.state === 0 : video.readyState < 3 || video.ended,
+      play: () => { if (mode === "yt") player.playVideo(); else if (mode === "twitch") tw.play(); else if (mode === "tiktok") tkSend("play"); else { const r = video.play(); if (r && r.catch) r.catch(() => {}); } },
+      pause: () => { if (mode === "yt") player.pauseVideo(); else if (mode === "twitch") tw.pause(); else if (mode === "tiktok") tkSend("pause"); else video.pause(); },
+      seek: (t) => { if (mode === "yt") player.seekTo(t, true); else if (mode === "twitch") tw.seek(t); else if (mode === "tiktok") tkSend("seekTo", Math.floor(t)); else video.currentTime = t; },
+      ok: () => mode === "yt" ? !!(player && ready && player.getCurrentTime) : mode === "twitch" ? !!(tw && twReady) : mode === "tiktok" ? tk.ready : !!mode,
     };
 
-    // ابلاغ السيرفر بمدة الفيديو
     function report() {
       const l = last, d = A.dur();
       if (!l || !l.tok || l.dur || l.live || reported === l.tok || !d || !isFinite(d) || d < 1) return;
@@ -151,16 +179,15 @@
       send("cin_meta", { id: l.id, tok: l.tok, dur: Math.floor(d) });
     }
 
-    // انتهى العرض
     function showEnded() { endedNow = true; showIdle("انتهى العرض"); }
 
-    // ايقاف كل شيء
     function clearMedia() {
       if (hls) { try { hls.destroy(); } catch (e) {} hls = null; }
       video.pause(); video.removeAttribute("src"); video.load(); video.style.display = "none";
       if (player && ready && player.stopVideo) player.stopVideo();
       if (tw) { try { tw.pause(); } catch (e) {} tw = null; }
       twBox.innerHTML = ""; twBox.style.display = "none"; twReady = false;
+      tkFrame.removeAttribute("src"); tkFrame.style.display = "none"; tk.ready = false;
       idle.style.display = ""; shield.style.display = "";
       mode = null;
     }
@@ -170,7 +197,6 @@
     video.addEventListener("ended", () => { if (mode !== "yt" && !last.live) showEnded(); });
     video.addEventListener("error", () => { if (mode && mode !== "yt" && !hls && video.getAttribute("src")) showIdle("ما قدرنا نشغل هذا الرابط"); });
 
-    // تشغيل رابط مباشر
     function startVideo(p) {
       video.style.display = "block";
       const path = (p.vid || "").split(/[?#]/)[0].toLowerCase();
@@ -200,7 +226,6 @@
       }
     }
 
-    // بدء العرض
     function start(p) {
       clearMedia();
       last = p; endedNow = false; reported = "";
@@ -214,12 +239,13 @@
         if (p.ended) setTimeout(() => { player.pauseVideo(); showEnded(); }, 700);
       } else if (mode === "twitch") {
         startTwitch(p);
+      } else if (mode === "tiktok") {
+        startTiktok(p);
       } else {
         startVideo(p);
       }
     }
 
-    // مزامنة الوقت
     function sync(m) {
       if (!A.ok()) return;
       if (m.ended) { if (A.playing()) A.pause(); showEnded(); return; }
@@ -238,7 +264,6 @@
       if (m.force ? diff > 1.5 : (diff > 6 && now - lastSeek > 20000)) { lastSeek = now; A.seek(m.t); }
     }
 
-    // الترميزات المدعومة
     const MSE = window.MediaSource && MediaSource.isTypeSupported ? (t) => MediaSource.isTypeSupported(t) : () => false;
     const CAN = {
       h264: !!video.canPlayType('video/mp4; codecs="avc1.42E01E"') || MSE('video/mp4; codecs="avc1.42E01E"'),
@@ -248,22 +273,24 @@
     };
     send("cin_diag", Object.assign(Object.fromEntries(Object.keys(CAN).map((k) => [k, CAN[k] ? 1 : 0])), { cv: (navigator.userAgent.match(/Chrome\/(\d+)/) || [0, 0])[1] }));
 
-    // الصوت حسب المسافة
     setInterval(() => {
       curVol += (vol - curVol) * 0.25;
       if (mode === "yt" && player && ready) player.setVolume(Math.round(curVol * 100));
       else if (mode === "twitch") { if (tw && twReady) tw.setVolume(Math.max(0, Math.min(1, curVol))); }
+      else if (mode === "tiktok") { const mute = vol < 0.05; if (tk.ready && tk.muted !== mute) { tk.muted = mute; tkSend(mute ? "mute" : "unMute"); } }
       else if (mode) video.volume = Math.max(0, Math.min(1, curVol));
     }, 50);
 
     window.addEventListener("message", (ev) => {
+      if (/(^|\.)tiktok\.com$/.test((ev.origin || "").replace(/^https?:\/\//, ""))) return onTiktok(ev.data);
       const m = ev.data;
       if (!m || typeof m !== "object") return;
       if (m.type === "load") {
         const k = m.kind || "yt";
         if (k === "yt" && (typeof m.vid !== "string" || !/^[\w-]{11}$/.test(m.vid))) return;
         if (k === "twitch" && !/^(v\d{1,12}|[a-z0-9_]{2,25})$/.test(m.vid || "")) return;
-        if (k !== "yt" && k !== "kick" && k !== "twitch" && !/^https?:\/\//.test(m.vid || "")) return;
+        if (k === "tiktok" && !(m.live ? /^[\w.]{2,24}$/ : /^\d{8,25}$/).test(m.vid || "")) return;
+        if (["yt", "kick", "twitch", "tiktok"].indexOf(k) === -1 && !/^https?:\/\//.test(m.vid || "")) return;
         if (k === "kick" && !/^https:\/\//.test(m.src || "")) return showIdle("البث غير متاح الآن");
         start(m);
       } else if (m.type === "sync") {
