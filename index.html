@@ -39,7 +39,7 @@
     const video = document.getElementById("vid");
     let player = null, ready = false, pending = null, apiLoading = false, altHost = false;
     let last = null, mode = null, hls = null, hlsLoading = false;
-    let vol = 0, curVol = 0, reported = "", endedNow = false, lastSeek = 0;
+    let vol = 0, curVol = 0, reported = "", endedNow = false, lastSeek = 0, lastSync = null;
     let tw = null, twLoading = false, twReady = false;
     const RES = new URLSearchParams(location.search).get("res");
     const twBox = document.getElementById("tw"), shield = document.querySelector(".shield"), tkFrame = document.getElementById("tk");
@@ -55,7 +55,7 @@
     }
 
     function startTiktok(p) {
-      tk = { ready: false, state: -1, time: Math.max(0, p.t || 0), dur: 0, muted: null, retried: false };
+      tk = { ready: false, state: -1, time: Math.max(0, p.t || 0), dur: 0, muted: null, retries: 0 };
       idle.style.display = "none";
       shield.style.display = "none";
       tkFrame.style.display = "block";
@@ -74,6 +74,7 @@
       } else if (m.type === "onStateChange") {
         tk.state = Number(v);
         if (tk.state === 0 && !last.live) showEnded();
+        if (tk.state === 1) setTimeout(catchUp, 400);
       } else if (m.type === "onCurrentTime" && v && typeof v === "object") {
         tk.time = Number(v.currentTime) || 0;
         tk.dur = Number(v.duration) || 0;
@@ -82,8 +83,8 @@
         tk.muted = !!v;
       } else if (m.type === "onPlayerError" && v) {
         if (v.errorCode === 3002) tkSend("play");
-        else if (v.errorCode === 3001 && !tk.retried) { tk.retried = true; const src = tkFrame.src; tkFrame.src = "about:blank"; setTimeout(() => { if (mode === "tiktok") tkFrame.src = src; }, 800); }
-        else { idle.style.display = ""; showIdle(v.errorCode === 1001 ? "الفيديو غير موجود او محذوف" : "ما قدرنا نشغل فيديو تيك توك"); }
+        else if (v.errorCode !== 1001 && tk.retries < 3) { tk.retries++; const src = tkFrame.src; tkFrame.src = "about:blank"; setTimeout(() => { if (mode === "tiktok") tkFrame.src = src; }, 1200 * tk.retries); }
+        else { idle.style.display = ""; showIdle(v.errorCode === 1001 ? "الفيديو غير موجود او محذوف" : "ما قدرنا نشغل فيديو تيك توك (" + v.errorCode + ")"); }
       }
     }
 
@@ -109,7 +110,7 @@
           onReady: () => { ready = true; player.setVolume(0); if (pending) { const p = pending; pending = null; start(p); } },
           onStateChange: (e) => {
             if (mode !== "yt") return;
-            if (e.data === YT.PlayerState.PLAYING) { if (!endedNow) idle.classList.add("hide"); report(); }
+            if (e.data === YT.PlayerState.PLAYING) { if (!endedNow) idle.classList.add("hide"); report(); setTimeout(catchUp, 300); }
             if (e.data === YT.PlayerState.ENDED) showEnded();
           },
           onError: (e) => {
@@ -192,7 +193,7 @@
       mode = null;
     }
 
-    video.addEventListener("playing", () => { if (mode !== "yt" && !endedNow) idle.classList.add("hide"); report(); });
+    video.addEventListener("playing", () => { if (mode !== "yt" && !endedNow) idle.classList.add("hide"); report(); setTimeout(catchUp, 300); });
     video.addEventListener("loadedmetadata", report);
     video.addEventListener("ended", () => { if (mode !== "yt" && !last.live) showEnded(); });
     video.addEventListener("error", () => { if (mode && mode !== "yt" && !hls && video.getAttribute("src")) showIdle("ما قدرنا نشغل هذا الرابط"); });
@@ -229,6 +230,7 @@
     function start(p) {
       clearMedia();
       last = p; endedNow = false; reported = "";
+      lastSync = { t: Math.max(0, p.t || 0), at: Date.now(), paused: !!(p.paused || p.ended) };
       showIdle(p.live ? "جاري الاتصال بالبث" : "جاري التحميل");
       mode = p.kind || "yt";
       if (mode === "yt") {
@@ -246,7 +248,19 @@
       }
     }
 
+    function expected() {
+      if (!lastSync) return null;
+      return lastSync.paused ? lastSync.t : lastSync.t + (Date.now() - lastSync.at) / 1000;
+    }
+
+    function catchUp() {
+      if (!last || last.live || !lastSync || lastSync.paused || !A.ok() || A.busy()) return;
+      const e = expected();
+      if (e !== null && Math.abs(A.time() - e) > 1.5) { lastSeek = Date.now(); A.seek(e); }
+    }
+
     function sync(m) {
+      lastSync = { t: m.t || 0, at: Date.now(), paused: !!(m.paused || m.ended) };
       if (!A.ok()) return;
       if (m.ended) { if (A.playing()) A.pause(); showEnded(); return; }
       if (endedNow) { endedNow = false; idle.classList.add("hide"); }
@@ -261,7 +275,7 @@
       }
       if (last.live || A.busy()) return;
       const diff = Math.abs(A.time() - m.t), now = Date.now();
-      if (m.force ? diff > 1.5 : (diff > 6 && now - lastSeek > 20000)) { lastSeek = now; A.seek(m.t); }
+      if (m.force ? diff > 1.5 : (diff > 2.5 && now - lastSeek > 8000)) { lastSeek = now; A.seek(m.t); }
     }
 
     const MSE = window.MediaSource && MediaSource.isTypeSupported ? (t) => MediaSource.isTypeSupported(t) : () => false;
